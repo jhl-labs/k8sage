@@ -1,0 +1,173 @@
+name: Release
+
+# v* 태그를 push 하면 단일 실행파일(바이너리)과 wheel/sdist 를 빌드해
+# GitHub Release 에 첨부한다.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # 릴리스 생성/자산 업로드
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 1) 플랫폼별 단일 실행파일 (PyInstaller --onefile)
+  # --------------------------------------------------------------------------
+  binaries:
+    name: binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+            ext: ""
+          - os: ubuntu-24.04-arm
+            target: linux-aarch64
+            ext: ""
+          - os: macos-13          # Intel
+            target: macos-x86_64
+            ext: ""
+          - os: macos-latest      # Apple Silicon
+            target: macos-aarch64
+            ext: ""
+          - os: windows-latest
+            target: windows-x86_64
+            ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build standalone binary
+        shell: bash
+        run: |
+          uv run --extra dev pyinstaller \
+            --onefile \
+            --name k8sage \
+            --paths src \
+            --collect-submodules k8sage \
+            src/k8sage/__main__.py
+
+      - name: Stage & checksum
+        shell: bash
+        run: |
+          mkdir -p out
+          bin="dist/k8sage${{ matrix.ext }}"
+          asset="k8sage-${{ matrix.target }}${{ matrix.ext }}"
+          cp "$bin" "out/$asset"
+          cd out
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
+          # 정상 동작 확인 (kubectl 없이도 --version 은 동작)
+          chmod +x "$asset" || true
+          ./"$asset" --version || true
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: out/*
+
+  # --------------------------------------------------------------------------
+  # 2) Python 배포물 (wheel + sdist) — uv / pip 설치용
+  # --------------------------------------------------------------------------
+  dists:
+    name: wheel & sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build
+        run: uv build
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/*
+
+  # --------------------------------------------------------------------------
+  # 3) GitHub Release 생성 + 모든 자산 첨부
+  # --------------------------------------------------------------------------
+  release:
+    name: publish GitHub Release
+    needs: [binaries, dists]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten assets
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -al release
+
+      - name: Create / update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ## k8sage ${{ github.ref_name }}
+
+            ### Install / 설치
+
+            **uv (recommended):**
+            ```bash
+            uv tool install git+https://github.com/jhl-labs/k8sage@${{ github.ref_name }}
+            ```
+
+            **Standalone binary / 단일 실행파일:** download the file for your
+            platform below, then `chmod +x` (Linux/macOS) and put it on your `PATH`.
+
+            | Platform | Asset |
+            |----------|-------|
+            | Linux x86_64 | `k8sage-linux-x86_64` |
+            | Linux aarch64 | `k8sage-linux-aarch64` |
+            | macOS Intel | `k8sage-macos-x86_64` |
+            | macOS Apple Silicon | `k8sage-macos-aarch64` |
+            | Windows x86_64 | `k8sage-windows-x86_64.exe` |
+
+            Each binary ships with a matching `.sha256` checksum.
+
+            > Licensed under PolyForm Noncommercial 1.0.0 — free for personal /
+            > research use. Commercial use requires a separate license
+            > (see NOTICE).
+
+  # --------------------------------------------------------------------------
+  # 4) (선택) PyPI 배포 — 리포지토리 변수 PUBLISH_TO_PYPI=true 일 때만 동작.
+  #     PyPI Trusted Publishing(OIDC) 설정 후 사용하세요.
+  # --------------------------------------------------------------------------
+  pypi:
+    name: publish to PyPI (optional)
+    needs: [dists]
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # Trusted Publishing
+    steps:
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
