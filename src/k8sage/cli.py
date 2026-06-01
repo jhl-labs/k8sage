@@ -544,14 +544,22 @@ def _color_pct(padded: str, pal: Palette, base) -> str:
     return pal.warn(padded) if "!" in padded else base(padded)
 
 
+def _pct_of(v: int, total: int) -> str:
+    """v 가 total 의 몇 % 인지(정수%, 부호 없음). total 0 또는 v<=0 이면 '-'."""
+    if not total or v <= 0:
+        return "-"
+    return f"{v / total * 100:.0f}%"
+
+
 def _bar_lines(cpu: tuple[int, int, int], mem: tuple[int, int, int],
                cap_cpu: int, cap_mem: int, width: int, indent: str,
                pal: Palette) -> list[str]:
     """(use, req, lim) 튜플로 CPU/MEM 막대 2줄을 만든다 (컬러 적용).
 
     막대(▓/░)는 req/lim 의 '분포'를, 우측 값은 실사용량과 가용 대비 % 를,
-    맨 오른쪽 괄호는 정확한 (req / lim) 수치를 보여준다.
-    lim 이 총 가용을 넘으면(overcommit) 막대 옆에 ! 표시.
+    맨 오른쪽 괄호는 (req req% / lim lim%) — 즉 예약/상한이 allocatable 대비
+    몇 %인지를 보여준다(metrics-server 없이도 '얼마나 찼는지' 파악 가능).
+    req% 또는 lim% 가 100% 를 넘으면 빨강으로 강조하고 막대 옆에 ! 표시.
     """
     out = []
     for res, (u, rq, lm), total, fmt in (
@@ -562,8 +570,12 @@ def _bar_lines(cpu: tuple[int, int, int], mem: tuple[int, int, int],
         over = pal.warn("!") if total and lm > total else " "
         rq_s = f"{fmt(rq):>6}"
         lm_s = f"{(fmt(lm) if lm else '-'):>10}"
-        paren = (pal.dim("(") + pal.req(rq_s) + pal.dim(" / ")
-                 + pal.lim(lm_s) + pal.dim(")"))
+        rq_pct = f"{_pct_of(rq, total):>4}"
+        lm_pct = f"{_pct_of(lm, total):>4}"
+        rq_pct_c = pal.warn(rq_pct) if total and rq > total else pal.req(rq_pct)
+        lm_pct_c = pal.warn(lm_pct) if total and lm > total else pal.lim(lm_pct)
+        paren = (pal.dim("(") + pal.req(rq_s) + " " + rq_pct_c + pal.dim(" / ")
+                 + pal.lim(lm_s) + " " + lm_pct_c + pal.dim(")"))
         out.append(
             f"{indent}{pal.dim(res)} [{bar}]{over} "
             f"{pal.use(f'{fmt(u):>7}')} {_color_pct(f'{_pct(u, total):>4}', pal, pal.use)}  "
@@ -609,7 +621,8 @@ def print_bars(stats: dict[str, NsStat], has_usage: bool,
     print(pal.dim("Legend  bar  ") + pal.use(BAR_USE) + pal.dim(" use  ")
           + pal.req(BAR_REQ) + pal.dim(" req  ") + pal.lim(BAR_LIM)
           + pal.dim(" lim   (filled = share of allocatable)"))
-    print(pal.dim("        value = usage / alloc%,   (req / lim) shown on the right"))
+    print(pal.dim("        left value = usage (alloc%);  "
+                  "right ( req req% / lim lim% ) vs allocatable"))
     print(pal.dim("        ") + pal._w(STO_CODE, BAR_USE)
           + pal.dim(" STO = PVC used / capacity (live, from kubelet); "
                     "falls back to requested size if unavailable"))

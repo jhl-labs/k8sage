@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-01
+
+### Added
+- CPU/MEM bars now show **request and limit as a percentage of cluster
+  allocatable** in the parentheses, e.g. `( 750m 38% / 3.25 cores 162% )`.
+  This makes "how full is the cluster" obvious even without metrics-server
+  (the bar fill is the request), and percentages over 100% are highlighted in
+  red.
+
 ## [0.3.2] - 2026-06-01
 
 ### Fixed
@@ -66,7 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone single-file binaries for Linux, macOS (Intel & Apple Silicon),
   and Windows, published via GitHub Releases.
 
-[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jhl-labs/k8sage/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/jhl-labs/k8sage/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/jhl-labs/k8sage/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/jhl-labs/k8sage/compare/v0.2.0...v0.3.0

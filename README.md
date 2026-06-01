@@ -151,7 +151,9 @@ CPU [████▓▓▓░░········]!  1.2 cores  38%  (   2 cores 
 - **·** — unused headroom of cluster allocatable
 - **!** — the limit exceeds cluster allocatable (overcommit)
 - The right-hand value is `usage` and its `% of allocatable`; the parentheses
-  show exact `(request / limit)`.
+  show `( request req% / limit lim% )` — request and limit as a percentage of
+  allocatable, so you can read "how full" even without metrics-server (the bar
+  fill is the request). Percentages over 100% are highlighted.
 - A separate blue **`STO` bar** shows each namespace's **live PVC usage** —
   `used / capacity` read from the kubelet stats API, so `100%` means the volume
   is actually full. It needs `nodes/proxy` RBAC and only counts PVCs mounted by
@@ -325,7 +327,10 @@ CPU [████▓▓▓░░········]!  1.2 cores  38%  (   2 cores 
 - **░ lim** — 상한(limit)
 - **·** — 클러스터 가용량 중 미사용 여유
 - **!** — limit 이 클러스터 가용량을 초과(overcommit)
-- 오른쪽 값은 `실사용량` 과 `가용량 대비 %`, 괄호는 정확한 `(request / limit)`.
+- 오른쪽 값은 `실사용량` 과 `가용량 대비 %`, 괄호는
+  `( request req% / limit lim% )` — 예약/상한이 allocatable 대비 몇 %인지를
+  보여줍니다. metrics-server 가 없어도(막대를 채우는 건 request) "얼마나 찼는지"
+  를 바로 읽을 수 있고, 100% 초과는 강조 표시됩니다.
 - 별도의 파랑 **`STO` 막대**는 각 namespace 의 **실시간 PVC 사용량**을 보여줍니다 —
   kubelet stats API 의 `used / capacity` 라 `100%` 면 볼륨이 실제로 가득 찼다는
   뜻입니다. `nodes/proxy` RBAC 권한이 필요하고 실행 중 Pod 가 마운트한 PVC 만

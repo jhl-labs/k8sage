@@ -378,6 +378,20 @@ def test_color_pct():
     assert cli._color_pct("50%", pal, pal.use) == "50%"
 
 
+def test_pct_of():
+    assert cli._pct_of(0, 100) == "-"
+    assert cli._pct_of(50, 0) == "-"
+    assert cli._pct_of(50, 100) == "50%"
+    assert cli._pct_of(150, 100) == "150%"  # 부호('!') 없이 정수%
+
+
+def test_bar_lines_show_req_lim_pct():
+    # req 50/100=50%, lim 200/100=200% 가 CPU 줄에 표시된다
+    lines = cli._bar_lines((0, 50, 200), (0, 0, 0), 100, 1000, 16, "  ",
+                           cli.Palette(False))
+    assert "50%" in lines[0] and "200%" in lines[0]
+
+
 # ---------------------------------------------------------------------------
 # cluster_capacity
 # ---------------------------------------------------------------------------
