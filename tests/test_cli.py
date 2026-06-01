@@ -244,6 +244,41 @@ def test_pvc_usage_no_access(monkeypatch):
     assert cli.pvc_usage() is None
 
 
+def test_pvc_usage_dedupes_node_rootfs(monkeypatch):
+    # app 의 두 PVC 는 노드 루트 fs(cap==1000) 공유 → 한 번만(노드 fs used=800).
+    # db 의 PVC 는 별도 볼륨(cap=500) → 그대로 합산.
+    summary = {
+        "node": {"fs": {"capacityBytes": 1000, "usedBytes": 800}},
+        "pods": [{"volume": [
+            {"pvcRef": {"namespace": "app", "name": "a"},
+             "usedBytes": 790, "capacityBytes": 1000},
+            {"pvcRef": {"namespace": "app", "name": "b"},
+             "usedBytes": 795, "capacityBytes": 1000},
+            {"pvcRef": {"namespace": "db", "name": "c"},
+             "usedBytes": 100, "capacityBytes": 500},
+        ]}],
+    }
+    monkeypatch.setattr(cli, "kubectl",
+                        lambda args: {"items": [{"metadata": {"name": "n1"}}]})
+    monkeypatch.setattr(cli, "kubectl_raw", lambda path: summary)
+    assert cli.pvc_usage() == {"app": (800, 1000), "db": (100, 500)}
+
+
+def test_pvc_usage_rootfs_without_node_used(monkeypatch):
+    # 노드 fs capacity 는 있으나 usedBytes 가 없으면 볼륨의 used 를 사용
+    summary = {
+        "node": {"fs": {"capacityBytes": 1000}},
+        "pods": [{"volume": [
+            {"pvcRef": {"namespace": "app", "name": "a"},
+             "usedBytes": 790, "capacityBytes": 1000},
+        ]}],
+    }
+    monkeypatch.setattr(cli, "kubectl",
+                        lambda args: {"items": [{"metadata": {"name": "n1"}}]})
+    monkeypatch.setattr(cli, "kubectl_raw", lambda path: summary)
+    assert cli.pvc_usage() == {"app": (790, 1000)}
+
+
 # ---------------------------------------------------------------------------
 # 파서 / 포매터 (test_parsers.py 와 일부 중복 — 경계값 추가)
 # ---------------------------------------------------------------------------

@@ -173,7 +173,11 @@ def pvc_usage() -> dict[str, tuple[int, int]] | None:
       - nodes/proxy RBAC 권한이 필요하다(없으면 모든 노드 실패 → None).
       - 실행 중 Pod 가 마운트한 PVC 만 통계가 잡힌다(미마운트 PVC 제외).
       - local-path/hostPath 프로비저너는 PVC 논리 용량이 아니라 백킹
-        파일시스템(노드 디스크) 용량을 보고할 수 있다.
+        파일시스템(노드 루트 디스크) 용량을 보고한다. 같은 디스크를 공유하는
+        PVC 들이 같은 통계(= node.fs 와 동일한 capacity)를 보고하므로 합산하면
+        중복 계산된다. 볼륨 capacity 가 노드 루트 fs 와 같으면 "노드 디스크
+        공유"로 보고 namespace·노드 단위로 한 번만(노드 fs 사용량으로) 계산한다.
+        capacity 가 다른 볼륨(CSI 등 개별 볼륨)은 그대로 합산한다.
     """
     nodes = kubectl(["get", "nodes"])
     names = [n["metadata"]["name"] for n in nodes.get("items", [])]
@@ -185,6 +189,10 @@ def pvc_usage() -> dict[str, tuple[int, int]] | None:
         if data is None:
             continue
         any_ok = True
+        node_fs = data.get("node", {}).get("fs", {})
+        node_fs_cap = node_fs.get("capacityBytes")
+        node_fs_used = node_fs.get("usedBytes")
+        rootfs_ns: set = set()  # 이 노드 루트 fs 를 이미 반영한 namespace
         for pod in data.get("pods", []):
             for vol in pod.get("volume", []):
                 ref = vol.get("pvcRef")
@@ -195,6 +203,13 @@ def pvc_usage() -> dict[str, tuple[int, int]] | None:
                 cap = vol.get("capacityBytes")
                 if ns is None or used is None or cap is None:
                     continue
+                if node_fs_cap is not None and cap == node_fs_cap:
+                    # 노드 루트 파일시스템 위 볼륨(local-path/hostPath) → ns당 1회
+                    if ns in rootfs_ns:
+                        continue
+                    rootfs_ns.add(ns)
+                    if node_fs_used is not None:
+                        used = node_fs_used
                 u, c = agg.get(ns, (0, 0))
                 agg[ns] = (u + used, c + cap)
     if not any_ok:

@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-01
+
+### Fixed
+- Live PVC usage no longer double-counts a shared node filesystem. With
+  local-path/hostPath provisioners every PVC reports the whole node root disk,
+  so summing them inflated a namespace's storage (e.g. a 70 GiB disk shown as
+  ~140 GiB). Volumes whose capacity equals the node root filesystem are now
+  counted once per namespace (using the node `fs` usage), matching `df`;
+  distinct volumes (CSI, etc.) are still summed.
+
 ## [0.3.0] - 2026-06-01
 
 ### Added
@@ -47,7 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone single-file binaries for Linux, macOS (Intel & Apple Silicon),
   and Windows, published via GitHub Releases.
 
-[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/jhl-labs/k8sage/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/jhl-labs/k8sage/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jhl-labs/k8sage/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jhl-labs/k8sage/releases/tag/v0.1.0
