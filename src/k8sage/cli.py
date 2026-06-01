@@ -145,6 +145,63 @@ def kubectl_top() -> dict[tuple[str, str], tuple[int, int]] | None:
     return usage
 
 
+def kubectl_raw(path: str) -> dict | None:
+    """`kubectl get --raw <path>` 결과를 파싱해 반환. 실패 시 None."""
+    try:
+        proc = subprocess.run(
+            ["kubectl", "get", "--raw", path],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def pvc_usage() -> dict[str, tuple[int, int]] | None:
+    """namespace 별 PVC 실사용량을 kubelet summary API 로 집계.
+
+    각 노드의 `/api/v1/nodes/<node>/proxy/stats/summary` 에서 pod 가 마운트한
+    volume 의 (usedBytes, capacityBytes) 를 pvcRef.namespace 단위로 합산한다.
+    반환: {namespace: (used_bytes, capacity_bytes)}.
+
+    제약:
+      - nodes/proxy RBAC 권한이 필요하다(없으면 모든 노드 실패 → None).
+      - 실행 중 Pod 가 마운트한 PVC 만 통계가 잡힌다(미마운트 PVC 제외).
+      - local-path/hostPath 프로비저너는 PVC 논리 용량이 아니라 백킹
+        파일시스템(노드 디스크) 용량을 보고할 수 있다.
+    """
+    nodes = kubectl(["get", "nodes"])
+    names = [n["metadata"]["name"] for n in nodes.get("items", [])]
+
+    agg: dict[str, tuple[int, int]] = {}
+    any_ok = False
+    for name in names:
+        data = kubectl_raw(f"/api/v1/nodes/{name}/proxy/stats/summary")
+        if data is None:
+            continue
+        any_ok = True
+        for pod in data.get("pods", []):
+            for vol in pod.get("volume", []):
+                ref = vol.get("pvcRef")
+                if not ref:
+                    continue
+                ns = ref.get("namespace")
+                used = vol.get("usedBytes")
+                cap = vol.get("capacityBytes")
+                if ns is None or used is None or cap is None:
+                    continue
+                u, c = agg.get(ns, (0, 0))
+                agg[ns] = (u + used, c + cap)
+    if not any_ok:
+        return None  # 모든 노드 proxy 실패(RBAC 등) → 사용량 미표시
+    return agg
+
+
 # ----------------------------------------------------------------------------
 # 단위 파서: CPU(millicores), 메모리/스토리지(bytes)
 # ----------------------------------------------------------------------------
@@ -293,6 +350,7 @@ class NsStat:
     __slots__ = (
         "pods", "cpu_req", "cpu_lim", "mem_req", "mem_lim",
         "cpu_use", "mem_use", "pvc_count", "storage",
+        "stor_used", "stor_cap",
     )
 
     def __init__(self) -> None:
@@ -301,7 +359,9 @@ class NsStat:
         self.mem_req = self.mem_lim = 0
         self.cpu_use = self.mem_use = 0
         self.pvc_count = 0
-        self.storage = 0
+        self.storage = 0           # PVC 요청/프로비저닝 용량 합계
+        self.stor_used = 0         # PVC 실제 사용 바이트 (kubelet, 없으면 0)
+        self.stor_cap = 0          # PVC 실제 파일시스템 용량 (kubelet, 없으면 0)
 
 
 def collect(namespace: str | None) -> dict[str, NsStat]:
@@ -346,6 +406,14 @@ def collect(namespace: str | None) -> dict[str, NsStat]:
         st.pvc_count += 1
         st.storage += parse_mem(cap)
 
+    # --- PVC 실사용량 (kubelet) ---
+    usage = pvc_usage()  # None 이면 사용량 미표시(요청 용량 상대비교로 폴백)
+    if usage:
+        for ns, (used, cap) in usage.items():
+            if ns in stats:
+                stats[ns].stor_used = used
+                stats[ns].stor_cap = cap
+
     return stats
 
 
@@ -371,6 +439,7 @@ def aggregate(stats: dict[str, NsStat]) -> NsStat:
         tot.cpu_req += s.cpu_req; tot.cpu_lim += s.cpu_lim; tot.cpu_use += s.cpu_use
         tot.mem_req += s.mem_req; tot.mem_lim += s.mem_lim; tot.mem_use += s.mem_use
         tot.pvc_count += s.pvc_count; tot.storage += s.storage
+        tot.stor_used += s.stor_used; tot.stor_cap += s.stor_cap
     return tot
 
 
@@ -488,20 +557,29 @@ def _bar_lines(cpu: tuple[int, int, int], mem: tuple[int, int, int],
     return out
 
 
-def _storage_line(storage: int, pvc_count: int, max_storage: int,
-                  width: int, indent: str, pal: Palette) -> str:
-    """namespace PVC storage 막대 1줄. 가장 큰 namespace 를 가득으로 한 상대 비교.
+def _storage_usage_line(used: int, cap: int, pvc_count: int,
+                        width: int, indent: str, pal: Palette) -> str:
+    """PVC 실사용 막대 1줄: used / capacity (실제 %). 100% = 실제로 가득 참.
 
-    클러스터 전체 storage 총량은 기준이 없으므로 namespace 간 상대 크기로 표현하고,
-    오른쪽에 절대 용량과 PVC 개수를 보여준다.
+    오른쪽 괄호는 총 용량(capacity)을 보여준다.
     """
+    bar = colorize_bar(render_storage_bar(used, cap, width), pal, _STO_COLOR)
+    pct = _pct(used, cap)
+    return (f"{indent}{pal.dim('STO')} [{bar}]  "
+            f"{pal._w(STO_CODE, f'{fmt_bytes(used):>7}')} "
+            f"{pal.dim(f'{pct:>4}')}  "
+            f"{pal.dim('(')}{pal._w(STO_CODE, f'{fmt_bytes(cap):>10}')}{pal.dim(')')}  "
+            f"{pal.dim(f'pvc {pvc_count}')}")
+
+
+def _storage_req_line(storage: int, pvc_count: int, max_storage: int,
+                      width: int, indent: str, pal: Palette) -> str:
+    """실사용량을 못 구할 때의 폴백: 요청 용량을 가장 큰 namespace 대비 상대 표시."""
     bar = colorize_bar(render_storage_bar(storage, max_storage, width),
                        pal, _STO_COLOR)
-    share = _pct(storage, max_storage)
-    val = pal._w(STO_CODE, f"{fmt_bytes(storage):>7}")
-    pvc = pal.dim(f"pvc {pvc_count}")
     return (f"{indent}{pal.dim('STO')} [{bar}]  "
-            f"{val} {pal.dim(f'{share:>4}')}  {pvc}")
+            f"{pal._w(STO_CODE, f'{fmt_bytes(storage):>7}')}       "
+            f"{pal.dim(f'pvc {pvc_count} · requested (no live usage)')}")
 
 
 def print_bars(stats: dict[str, NsStat], has_usage: bool,
@@ -518,7 +596,8 @@ def print_bars(stats: dict[str, NsStat], has_usage: bool,
           + pal.dim(" lim   (filled = share of allocatable)"))
     print(pal.dim("        value = usage / alloc%,   (req / lim) shown on the right"))
     print(pal.dim("        ") + pal._w(STO_CODE, BAR_USE)
-          + pal.dim(" STO = PVC storage per namespace, relative to the largest ns"))
+          + pal.dim(" STO = PVC used / capacity (live, from kubelet); "
+                    "falls back to requested size if unavailable"))
     print(pal.dim("        ! = limit exceeds allocatable"))
     if not has_usage:
         print(pal.warn("Note: metrics-server not found → 'use' shown as '-'/0."))
@@ -542,9 +621,12 @@ def print_bars(stats: dict[str, NsStat], has_usage: bool,
             cap_cpu, cap_mem, width, indent="    ", pal=pal,
         ):
             print(ln)
-        if s.storage:
-            print(_storage_line(s.storage, s.pvc_count, max_storage,
-                                width, indent="    ", pal=pal))
+        if s.stor_cap:
+            print(_storage_usage_line(s.stor_used, s.stor_cap, s.pvc_count,
+                                      width, indent="    ", pal=pal))
+        elif s.storage:
+            print(_storage_req_line(s.storage, s.pvc_count, max_storage,
+                                    width, indent="    ", pal=pal))
 
     if not has_usage:
         print(no_metrics_hint())
@@ -562,6 +644,10 @@ def to_json(stats: dict[str, NsStat], has_usage: bool) -> str:
             "pvc_count": s.pvc_count,
             "storage_bytes": s.storage,
         }
+        if s.stor_cap:
+            d["storage_used_bytes"] = s.stor_used
+            d["storage_capacity_bytes"] = s.stor_cap
+            d["storage_usage_pct"] = round(s.stor_used / s.stor_cap * 100, 1)
         if has_usage:
             d["cpu_usage_millicores"] = s.cpu_use
             d["mem_usage_bytes"] = s.mem_use
