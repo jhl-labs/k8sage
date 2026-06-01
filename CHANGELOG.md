@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-06-01
+
+### Fixed
+- Linux standalone binaries now run on older distributions (Ubuntu 20.04+,
+  RHEL 8+, Debian 10+). They were built on Ubuntu 24.04 (glibc 2.39) and failed
+  with `GLIBC_2.38 not found` on older systems. Linux binaries are now built
+  inside a `manylinux_2_28` container (glibc 2.28) for broad compatibility.
+  macOS/Windows builds are unchanged.
+
 ## [0.3.1] - 2026-06-01
 
 ### Fixed
@@ -57,7 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone single-file binaries for Linux, macOS (Intel & Apple Silicon),
   and Windows, published via GitHub Releases.
 
-[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/jhl-labs/k8sage/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/jhl-labs/k8sage/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/jhl-labs/k8sage/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jhl-labs/k8sage/compare/v0.1.0...v0.2.0

@@ -16,22 +16,65 @@ permissions:
 
 jobs:
   # --------------------------------------------------------------------------
-  # 1) 플랫폼별 단일 실행파일 (PyInstaller --onefile)
+  # 1a) Linux 단일 실행파일 — manylinux_2_28 컨테이너(glibc 2.28)에서 빌드.
+  #     PyInstaller 바이너리는 빌드 호스트의 glibc 에 의존하므로, 오래된 glibc
+  #     에서 빌드해 폭넓은 호환을 확보한다. glibc 2.28 → Ubuntu 20.04 / RHEL8 /
+  #     Debian10 이상에서 동작. (manylinux2014/glibc2.17 은 actions/checkout 의
+  #     node20 이 안 돌아가 사용 불가.)
   # --------------------------------------------------------------------------
-  binaries:
+  linux-binaries:
     name: binary (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30   # 느린/멈춘 러너가 릴리스를 무한정 막지 않도록
+    timeout-minutes: 30
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: linux-x86_64
-            ext: ""
+            container: quay.io/pypa/manylinux_2_28_x86_64
           - os: ubuntu-24.04-arm
             target: linux-aarch64
-            ext: ""
+            container: quay.io/pypa/manylinux_2_28_aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build standalone binary (manylinux, glibc 2.28)
+        run: |
+          PYBIN=/opt/python/cp312-cp312/bin
+          "$PYBIN/pip" install --upgrade pip pyinstaller
+          "$PYBIN/pip" install .
+          "$PYBIN/pyinstaller" --onefile --name k8sage \
+            --paths src --collect-submodules k8sage src/k8sage/__main__.py
+
+      - name: Stage & checksum
+        run: |
+          mkdir -p out
+          asset="k8sage-${{ matrix.target }}"
+          cp dist/k8sage "out/$asset"
+          cd out
+          sha256sum "$asset" > "$asset.sha256"
+          chmod +x "$asset"
+          ./"$asset" --version
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: out/*
+
+  # --------------------------------------------------------------------------
+  # 1b) macOS / Windows 단일 실행파일 — 호스트에서 uv 로 빌드.
+  # --------------------------------------------------------------------------
+  desktop-binaries:
+    name: binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - os: macos-latest      # Apple Silicon
             target: macos-aarch64
             ext: ""
@@ -102,7 +145,7 @@ jobs:
   # --------------------------------------------------------------------------
   release:
     name: publish GitHub Release
-    needs: [binaries, dists]
+    needs: [linux-binaries, desktop-binaries, dists]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -143,6 +186,8 @@ jobs:
             | Windows x86_64 | `k8sage-windows-x86_64.exe` |
 
             Each binary ships with a matching `.sha256` checksum.
+            Linux binaries are built against glibc 2.28, so they run on
+            Ubuntu 20.04+ / RHEL 8+ / Debian 10+.
             Intel macOS users: install via `uv tool install` or `pipx` instead.
 
             > Licensed under PolyForm Noncommercial 1.0.0 — free for personal /

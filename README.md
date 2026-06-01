@@ -74,6 +74,9 @@ Download the file for your platform from the
 
 > Intel macOS: prebuilt binaries aren't published — install via `uv` / `pipx`
 > (Option A / C) instead.
+>
+> Linux binaries are built against **glibc 2.28**, so they run on
+> Ubuntu 20.04+ / RHEL 8+ / Debian 10+. On older systems, use `uv` / `pipx`.
 
 ```bash
 # Linux / macOS example
@@ -246,6 +249,9 @@ uv tool install git+https://github.com/jhl-labs/k8sage@v0.1.0
 
 > Intel macOS: 미리 빌드된 바이너리는 제공하지 않습니다 — `uv` / `pipx`
 > (방법 A / C)로 설치하세요.
+>
+> Linux 바이너리는 **glibc 2.28** 기준으로 빌드되어 Ubuntu 20.04+ / RHEL 8+ /
+> Debian 10+ 에서 동작합니다. 더 오래된 환경은 `uv` / `pipx` 를 사용하세요.
 
 ```bash
 # Linux / macOS 예시
