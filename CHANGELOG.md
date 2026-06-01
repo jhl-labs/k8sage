@@ -10,10 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Linux standalone binaries now run on older distributions (Ubuntu 20.04+,
-  RHEL 8+, Debian 10+). They were built on Ubuntu 24.04 (glibc 2.39) and failed
-  with `GLIBC_2.38 not found` on older systems. Linux binaries are now built
-  inside a `manylinux_2_28` container (glibc 2.28) for broad compatibility.
-  macOS/Windows builds are unchanged.
+  RHEL 8+, Debian 10+, …). They were built on Ubuntu 24.04 (glibc 2.39) and
+  failed with `GLIBC_2.38 not found` on older systems. Linux binaries are now
+  statically linked with `staticx`, bundling libc so they run regardless of the
+  target's glibc version. macOS/Windows builds are unchanged.
 
 ## [0.3.1] - 2026-06-01
 
