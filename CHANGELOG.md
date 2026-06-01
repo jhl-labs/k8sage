@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-01
+
+### Changed
+- Reworked the "no live usage" hint. It previously told everyone to install
+  metrics-server, which on RKE2/k3s (and managed clusters that already ship one,
+  e.g. `rke2-metrics-server`) led to a second, conflicting metrics-server on the
+  shared `v1beta1.metrics.k8s.io` APIService. The hint now tells you to (1) check
+  for an existing metrics-server first, (2) fix kubelet TLS on the existing one
+  if usage is empty, and (3) install upstream only if none exists. The bars-view
+  note no longer claims "metrics-server not found".
+
 ## [0.4.0] - 2026-06-01
 
 ### Added
@@ -75,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone single-file binaries for Linux, macOS (Intel & Apple Silicon),
   and Windows, published via GitHub Releases.
 
-[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/jhl-labs/k8sage/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/jhl-labs/k8sage/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/jhl-labs/k8sage/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/jhl-labs/k8sage/compare/v0.3.0...v0.3.1

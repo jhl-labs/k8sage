@@ -165,14 +165,25 @@ CPU [████▓▓▓░░········]!  1.2 cores  38%  (   2 cores 
 A **low usage/request ratio** means requests are over-provisioned — you're
 reserving scheduling capacity you don't actually use.
 
-#### No `metrics-server`?
+#### No live usage (`use` shows `-`)?
 
-The tool still works; the `use` columns are hidden and it prints instructions to
-install `metrics-server`. To enable live usage:
+The tool still works; only the `use` columns are hidden. Before installing
+anything, **check whether a metrics-server already exists** — RKE2/k3s and many
+managed clusters ship one (often named `rke2-metrics-server`). Installing a
+second one conflicts on the shared `v1beta1.metrics.k8s.io` APIService.
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl get apiservice v1beta1.metrics.k8s.io
+kubectl get deploy -A | grep -i metrics-server
 ```
+
+- **One exists but usage is empty** → it usually can't reach the kubelet over TLS
+  (common on RKE2/on-prem). Add `--kubelet-insecure-tls` to *that* deployment
+  (on RKE2, via a `HelmChartConfig` for `rke2-metrics-server`).
+- **None installed** → install the upstream one:
+  ```bash
+  kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+  ```
 
 ### License
 
@@ -341,13 +352,25 @@ CPU [████▓▓▓░░········]!  1.2 cores  38%  (   2 cores 
 **usage/request 비율이 낮다**는 것은 request 가 과다 예약됐다는 뜻입니다 —
 실제로 쓰지 않는 스케줄링 용량을 잡아두고 있는 상태입니다.
 
-#### `metrics-server` 가 없다면?
+#### 실사용량(`use`)이 `-` 로 나온다면?
 
-없어도 동작하며, `use` 열만 숨기고 설치 방법을 안내합니다. 실사용량을 켜려면:
+없어도 동작하며 `use` 열만 숨겨집니다. 무언가 설치하기 전에 **이미 metrics-server
+가 있는지 먼저 확인**하세요 — RKE2/k3s 및 다수의 매니지드 클러스터는 기본 탑재돼
+있습니다(보통 `rke2-metrics-server`). 두 번째를 설치하면 공유 APIService
+`v1beta1.metrics.k8s.io` 에서 충돌합니다.
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl get apiservice v1beta1.metrics.k8s.io
+kubectl get deploy -A | grep -i metrics-server
 ```
+
+- **이미 있는데 usage 가 비어 있다** → 대개 kubelet 에 TLS 로 못 붙는 문제입니다
+  (RKE2/온프렘에서 흔함). *그 디플로이먼트*에 `--kubelet-insecure-tls` 를 추가하세요
+  (RKE2 는 `rke2-metrics-server` 용 `HelmChartConfig` 로 주는 게 정석).
+- **하나도 없다** → 업스트림 metrics-server 설치:
+  ```bash
+  kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+  ```
 
 ### 라이선스
 

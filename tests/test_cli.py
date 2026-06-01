@@ -581,7 +581,7 @@ def test_print_bars_no_usage(capsys):
     cli.print_bars(stats, has_usage=False, cap_cpu=4000, cap_mem=8 * 1024**3,
                    sort_key="cpu", pal=cli.Palette(False), width=8)
     out = capsys.readouterr().out
-    assert "metrics-server not found" in out
+    assert "live usage unavailable" in out
 
 
 def test_bar_lines_zero_limit_dash():

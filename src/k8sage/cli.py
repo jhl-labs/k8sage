@@ -523,19 +523,29 @@ def print_table(stats: dict[str, NsStat], has_usage: bool, sort_key: str) -> Non
 
 def no_metrics_hint() -> str:
     return (
-        "\n* usage (use) hidden: metrics-server (Metrics API) is not available, "
-        "so live usage cannot be fetched.\n"
-        "  Showing requests/limits instead.\n"
-        "\n  [To see live usage, install metrics-server]\n"
-        "    kubectl apply -f https://github.com/kubernetes-sigs/"
-        "metrics-server/releases/latest/download/components.yaml\n"
-        "\n  On self-managed clusters (on-prem/Rancher), if pods don't show up, "
-        "add the kubelet TLS option:\n"
-        "    kubectl patch deployment metrics-server -n kube-system --type=json \\\n"
-        "      -p='[{\"op\":\"add\",\"path\":"
+        "\n* usage (use) hidden: the Metrics API (metrics.k8s.io) returned no "
+        "data, so live usage can't be fetched. Showing requests/limits instead.\n"
+        "\n  1) FIRST check if a metrics-server is already installed. RKE2/k3s and "
+        "many managed clusters\n"
+        "     ship one (often named rke2-metrics-server, etc.) — do NOT install a "
+        "second one, or it\n"
+        "     will conflict on the shared v1beta1.metrics.k8s.io APIService:\n"
+        "       kubectl get apiservice v1beta1.metrics.k8s.io\n"
+        "       kubectl get deploy -A | grep -i metrics-server\n"
+        "\n  2) If one EXISTS but usage is still empty, it usually can't reach the "
+        "kubelet over TLS\n"
+        "     (common on RKE2/on-prem). Add --kubelet-insecure-tls to THAT "
+        "deployment, e.g.:\n"
+        "       kubectl patch deploy <metrics-server> -n kube-system --type=json \\\n"
+        "         -p='[{\"op\":\"add\",\"path\":"
         "\"/spec/template/spec/containers/0/args/-\","
         "\"value\":\"--kubelet-insecure-tls\"}]'\n"
-        "  Re-run after 1-2 minutes and the usage columns will appear."
+        "     (On RKE2, prefer a HelmChartConfig for rke2-metrics-server instead "
+        "of patching directly.)\n"
+        "\n  3) ONLY if none is installed, install the upstream metrics-server:\n"
+        "       kubectl apply -f https://github.com/kubernetes-sigs/"
+        "metrics-server/releases/latest/download/components.yaml\n"
+        "\n  Re-run k8sage after 1-2 minutes."
     )
 
 
@@ -628,7 +638,8 @@ def print_bars(stats: dict[str, NsStat], has_usage: bool,
                     "falls back to requested size if unavailable"))
     print(pal.dim("        ! = limit exceeds allocatable"))
     if not has_usage:
-        print(pal.warn("Note: metrics-server not found → 'use' shown as '-'/0."))
+        print(pal.warn("Note: live usage unavailable (Metrics API returned no "
+                       "data) → 'use' shown as '-'/0."))
 
     print("\n" + pal.head("■ Whole cluster"))
     for ln in _bar_lines(
