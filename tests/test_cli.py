@@ -185,6 +185,66 @@ def test_kubectl_top_no_metrics(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# kubectl_raw / pvc_usage
+# ---------------------------------------------------------------------------
+def test_kubectl_raw_success(monkeypatch):
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda *a, **k: FakeProc(stdout='{"ok": 1}', returncode=0))
+    assert cli.kubectl_raw("/x") == {"ok": 1}
+
+
+def test_kubectl_raw_nonzero(monkeypatch):
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda *a, **k: FakeProc(returncode=1))
+    assert cli.kubectl_raw("/x") is None
+
+
+def test_kubectl_raw_not_found(monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError
+    monkeypatch.setattr(cli.subprocess, "run", boom)
+    assert cli.kubectl_raw("/x") is None
+
+
+def test_kubectl_raw_bad_json(monkeypatch):
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda *a, **k: FakeProc(stdout="not json", returncode=0))
+    assert cli.kubectl_raw("/x") is None
+
+
+_SUMMARY = {"pods": [
+    {"volume": [
+        {"pvcRef": {"namespace": "app", "name": "p1"},
+         "usedBytes": 100, "capacityBytes": 1000},
+        {"pvcRef": {"namespace": "app", "name": "p2"},
+         "usedBytes": 50, "capacityBytes": 500},
+        {"name": "emptydir-no-pvcref"},                       # pvcRef 없음 → skip
+        {"pvcRef": {"namespace": "app"},                      # ns 만, used None → skip
+         "usedBytes": None, "capacityBytes": 1},
+        {"pvcRef": {"name": "q"},                             # namespace 없음 → skip
+         "usedBytes": 1, "capacityBytes": 2},
+    ]},
+    {},  # volume 키 없는 pod
+]}
+
+
+def test_pvc_usage_success(monkeypatch):
+    monkeypatch.setattr(cli, "kubectl",
+                        lambda args: {"items": [{"metadata": {"name": "n1"}}]})
+    monkeypatch.setattr(cli, "kubectl_raw", lambda path: _SUMMARY)
+    usage = cli.pvc_usage()
+    assert usage == {"app": (150, 1500)}
+
+
+def test_pvc_usage_no_access(monkeypatch):
+    # 모든 노드 proxy 실패(RBAC 등) → None
+    monkeypatch.setattr(cli, "kubectl",
+                        lambda args: {"items": [{"metadata": {"name": "n1"}}]})
+    monkeypatch.setattr(cli, "kubectl_raw", lambda path: None)
+    assert cli.pvc_usage() is None
+
+
+# ---------------------------------------------------------------------------
 # 파서 / 포매터 (test_parsers.py 와 일부 중복 — 경계값 추가)
 # ---------------------------------------------------------------------------
 def test_parse_cpu_variants():
@@ -255,9 +315,19 @@ def test_colorize_bar_storage_map():
     assert f"\033[{cli.STO_CODE}m" in out  # storage 파랑 코드
 
 
-def test_storage_line():
-    line = cli._storage_line(6 * 1024**3, 2, 6 * 1024**3, 16, "  ", cli.Palette(False))
-    assert "STO" in line and "6Gi" in line and "pvc 2" in line and "100%" in line
+def test_storage_usage_line():
+    # used 5Gi / cap 10Gi -> 50%, 총 용량은 괄호에
+    line = cli._storage_usage_line(5 * 1024**3, 10 * 1024**3, 2, 16, "  ",
+                                   cli.Palette(False))
+    assert "STO" in line and "5Gi" in line and "10Gi" in line
+    assert "50%" in line and "pvc 2" in line
+
+
+def test_storage_req_line():
+    line = cli._storage_req_line(6 * 1024**3, 2, 6 * 1024**3, 16, "  ",
+                                 cli.Palette(False))
+    assert "STO" in line and "6Gi" in line
+    assert "requested (no live usage)" in line and "pvc 2" in line
 
 
 def test_pct():
@@ -333,8 +403,15 @@ def test_collect_with_usage(monkeypatch):
     monkeypatch.setattr(cli, "kubectl", fake_kubectl)
     monkeypatch.setattr(cli, "kubectl_top",
                         lambda: {("app", "web"): (123, 200 * 1024**2)})
+    # 실사용량: app 은 stats 에 있어 반영, ghost 는 없어 건너뜀
+    monkeypatch.setattr(cli, "pvc_usage",
+                        lambda: {"app": (8 * 1024**3, 10 * 1024**3),
+                                 "ghost": (1, 1)})
     stats = cli.collect(None)
     app = stats["app"]
+    assert app.stor_used == 8 * 1024**3
+    assert app.stor_cap == 10 * 1024**3
+    assert "ghost" not in stats
     assert app.pods == 1
     assert app.cpu_req == 250 + 50          # 일반 + init
     assert app.cpu_lim == 500
@@ -355,10 +432,12 @@ def test_collect_namespace_scope_no_metrics(monkeypatch):
         return _fake_pods() if "pods" in args else _fake_pvcs()
     monkeypatch.setattr(cli, "kubectl", fake_kubectl)
     monkeypatch.setattr(cli, "kubectl_top", lambda: None)  # metrics-server 없음
+    monkeypatch.setattr(cli, "pvc_usage", lambda: None)    # storage 사용량 미접근
     stats = cli.collect("app")
     # -n <ns> 스코프가 전달됐는지
     assert ["get", "pods", "-n", "app"] in captured["scopes"]
     assert all(s.cpu_use == 0 for s in stats.values())
+    assert all(s.stor_cap == 0 for s in stats.values())
 
 
 # ---------------------------------------------------------------------------
@@ -431,8 +510,21 @@ def test_print_bars_with_usage_and_pvc(capsys):
                    sort_key="cpu", pal=cli.Palette(True), width=16)
     out = capsys.readouterr().out
     assert "Whole cluster" in out and "By namespace" in out
-    assert "STO" in out and "pvc 2" in out   # storage 막대 라인
+    # stor_cap 없음 → 요청-용량 폴백 STO 라인
+    assert "STO" in out and "requested (no live usage)" in out
     assert "!" in out  # cpu_lim(8000) > cap_cpu(4000) → overcommit 표시
+
+
+def test_print_bars_storage_live_usage(capsys):
+    stats = {"app": make_stat(pods=1, cpu_req=100, cpu_use=10, mem_use=5,
+                              pvc_count=2, storage=6 * 1024**3,
+                              stor_used=5 * 1024**3, stor_cap=10 * 1024**3)}
+    cli.print_bars(stats, has_usage=True, cap_cpu=4000, cap_mem=8 * 1024**3,
+                   sort_key="cpu", pal=cli.Palette(False), width=16)
+    out = capsys.readouterr().out
+    # 실사용 STO 라인: used/cap 와 실제 % 표시
+    assert "STO" in out and "5Gi" in out and "10Gi" in out and "50%" in out
+    assert "requested (no live usage)" not in out
 
 
 def test_print_bars_no_usage(capsys):
@@ -472,6 +564,16 @@ def test_to_json_no_usage():
     stats = {"app": make_stat(pods=1, cpu_req=200)}
     data = json.loads(cli.to_json(stats, has_usage=False))
     assert "cpu_usage_millicores" not in data["app"]
+    assert "storage_used_bytes" not in data["app"]
+
+
+def test_to_json_storage_usage():
+    stats = {"app": make_stat(pods=1, pvc_count=1, storage=10 * 1024**3,
+                              stor_used=5 * 1024**3, stor_cap=10 * 1024**3)}
+    data = json.loads(cli.to_json(stats, has_usage=False))["app"]
+    assert data["storage_used_bytes"] == 5 * 1024**3
+    assert data["storage_capacity_bytes"] == 10 * 1024**3
+    assert data["storage_usage_pct"] == 50.0
 
 
 # ---------------------------------------------------------------------------

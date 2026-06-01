@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-01
+
+### Added
+- **Live PVC storage usage** in the bars view and JSON output. The `STO` bar
+  now shows real `used / capacity` from the kubelet stats summary API
+  (`/api/v1/nodes/<node>/proxy/stats/summary`), so `100%` means a volume is
+  actually full. JSON gains `storage_used_bytes`, `storage_capacity_bytes`, and
+  `storage_usage_pct`.
+
+### Notes
+- Live usage needs `nodes/proxy` RBAC and only counts PVCs mounted by a running
+  pod; otherwise it falls back to the requested-size relative view from 0.2.0.
+- Some provisioners (local-path / hostPath) report the backing node filesystem
+  rather than the PVC's logical size.
+
 ## [0.2.0] - 2026-06-01
 
 ### Added
@@ -32,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone single-file binaries for Linux, macOS (Intel & Apple Silicon),
   and Windows, published via GitHub Releases.
 
-[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jhl-labs/k8sage/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jhl-labs/k8sage/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jhl-labs/k8sage/releases/tag/v0.1.0

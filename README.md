@@ -143,9 +143,13 @@ CPU [████▓▓▓░░········]!  1.2 cores  38%  (   2 cores 
 - **!** — the limit exceeds cluster allocatable (overcommit)
 - The right-hand value is `usage` and its `% of allocatable`; the parentheses
   show exact `(request / limit)`.
-- A separate blue **`STO` bar** shows each namespace's PVC storage, scaled
-  relative to the largest namespace (there is no cluster-wide storage total to
-  compare against), with the absolute size and PVC count on the right.
+- A separate blue **`STO` bar** shows each namespace's **live PVC usage** —
+  `used / capacity` read from the kubelet stats API, so `100%` means the volume
+  is actually full. It needs `nodes/proxy` RBAC and only counts PVCs mounted by
+  a running pod; when live usage isn't available it falls back to the
+  *requested* size (scaled relative to the largest namespace). Note: some
+  provisioners (local-path / hostPath) report the backing node filesystem rather
+  than the PVC's logical size.
 
 A **low usage/request ratio** means requests are over-provisioned — you're
 reserving scheduling capacity you don't actually use.
@@ -310,9 +314,12 @@ CPU [████▓▓▓░░········]!  1.2 cores  38%  (   2 cores 
 - **·** — 클러스터 가용량 중 미사용 여유
 - **!** — limit 이 클러스터 가용량을 초과(overcommit)
 - 오른쪽 값은 `실사용량` 과 `가용량 대비 %`, 괄호는 정확한 `(request / limit)`.
-- 별도의 파랑 **`STO` 막대**는 각 namespace 의 PVC 스토리지를 가장 큰 namespace
-  기준 상대 크기로 표시합니다(클러스터 전체 스토리지 총량 기준이 없어 상대 비교).
-  오른쪽에 절대 용량과 PVC 개수를 함께 보여줍니다.
+- 별도의 파랑 **`STO` 막대**는 각 namespace 의 **실시간 PVC 사용량**을 보여줍니다 —
+  kubelet stats API 의 `used / capacity` 라 `100%` 면 볼륨이 실제로 가득 찼다는
+  뜻입니다. `nodes/proxy` RBAC 권한이 필요하고 실행 중 Pod 가 마운트한 PVC 만
+  집계되며, 사용량을 못 구하면 *요청 용량*(가장 큰 namespace 대비 상대)으로
+  폴백합니다. 참고: local-path / hostPath 프로비저너는 PVC 논리 용량이 아니라 노드
+  파일시스템 용량을 보고할 수 있습니다.
 
 **usage/request 비율이 낮다**는 것은 request 가 과다 예약됐다는 뜻입니다 —
 실제로 쓰지 않는 스케줄링 용량을 잡아두고 있는 상태입니다.
