@@ -37,8 +37,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install patchelf (staticx 의존)
-        run: sudo apt-get update && sudo apt-get install -y patchelf
+      - name: Install staticx build deps
+        # patchelf 는 staticx 런타임 의존. aarch64 는 staticx prebuilt wheel 이
+        # 없어 부트로더를 소스 빌드하므로 scons + C 툴체인이 필요하다.
+        run: sudo apt-get update && sudo apt-get install -y patchelf scons build-essential
 
       - name: Build standalone binary (PyInstaller + staticx)
         run: |
