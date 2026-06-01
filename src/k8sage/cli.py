@@ -204,28 +204,43 @@ def fmt_bytes(b: int) -> str:
 # ----------------------------------------------------------------------------
 # ASCII 막대 (usage / request / limit 을 총 가용량 위에 겹쳐 표현)
 # ----------------------------------------------------------------------------
-BAR_USE = "█"   # 실사용 (usage)
+BAR_USE = "█"   # 실사용 (usage) / storage 채움
 BAR_REQ = "▓"   # 예약 (request, 실사용 초과분)
 BAR_LIM = "░"   # 상한 (limit, 예약 초과분)
 BAR_GAP = "·"   # 미사용 여유 (옅은 점선 트랙)
 
+STO_CODE = "94"  # storage: 밝은 파랑
+
 _BAR_COLOR = {BAR_USE: "92", BAR_REQ: "33", BAR_LIM: "90", BAR_GAP: "90"}
+_STO_COLOR = {BAR_USE: STO_CODE, BAR_GAP: "90"}
 
 
-def colorize_bar(bar: str, pal: Palette) -> str:
+def colorize_bar(bar: str, pal: Palette, color_map: dict | None = None) -> str:
     """막대 문자열을 같은 문자 구간끼리 묶어 색을 입힌다(이스케이프 최소화)."""
     if not pal.on:
         return bar
+    cmap = color_map if color_map is not None else _BAR_COLOR
     out, i, n = [], 0, len(bar)
     while i < n:
         j = i
         while j < n and bar[j] == bar[i]:
             j += 1
-        code = _BAR_COLOR.get(bar[i])
+        code = cmap.get(bar[i])
         run = bar[i:j]
         out.append(f"\033[{code}m{run}\033[0m" if code else run)
         i = j
     return "".join(out)
+
+
+def render_storage_bar(value: int, total: int, width: int = 32) -> str:
+    """value 를 total(=최대 namespace storage) 대비 채운 단색 막대.
+
+    storage 는 use/req/lim 구분이 없어 채움(█)/여백(·) 단색으로만 표현한다.
+    """
+    if total <= 0 or value <= 0:
+        return BAR_GAP * width
+    fill = min(width, round(value / total * width))
+    return BAR_USE * fill + BAR_GAP * (width - fill)
 
 
 def render_bar(usage: int, request: int, limit: int, total: int, width: int = 32) -> str:
@@ -473,6 +488,22 @@ def _bar_lines(cpu: tuple[int, int, int], mem: tuple[int, int, int],
     return out
 
 
+def _storage_line(storage: int, pvc_count: int, max_storage: int,
+                  width: int, indent: str, pal: Palette) -> str:
+    """namespace PVC storage 막대 1줄. 가장 큰 namespace 를 가득으로 한 상대 비교.
+
+    클러스터 전체 storage 총량은 기준이 없으므로 namespace 간 상대 크기로 표현하고,
+    오른쪽에 절대 용량과 PVC 개수를 보여준다.
+    """
+    bar = colorize_bar(render_storage_bar(storage, max_storage, width),
+                       pal, _STO_COLOR)
+    share = _pct(storage, max_storage)
+    val = pal._w(STO_CODE, f"{fmt_bytes(storage):>7}")
+    pvc = pal.dim(f"pvc {pvc_count}")
+    return (f"{indent}{pal.dim('STO')} [{bar}]  "
+            f"{val} {pal.dim(f'{share:>4}')}  {pvc}")
+
+
 def print_bars(stats: dict[str, NsStat], has_usage: bool,
                cap_cpu: int, cap_mem: int, sort_key: str, pal: Palette,
                width: int = 32) -> None:
@@ -481,16 +512,14 @@ def print_bars(stats: dict[str, NsStat], has_usage: bool,
 
     print(pal.head("Cluster allocatable")
           + f"  CPU {pal.use(fmt_cpu(cap_cpu))}  │  MEM {pal.use(fmt_bytes(cap_mem))}")
-    print(pal.dim(
-        f"Legend  bar  {BAR_USE} use  {BAR_REQ} req  {BAR_LIM} lim   "
-        "(filled = share of allocatable)"
-    ))
-    print(pal.dim(
-        "        value = usage / alloc%,   (req / lim) shown on the right"
-    ))
-    print(pal.dim(
-        "        ! = limit exceeds allocatable"
-    ))
+    # 레전드 기호는 막대와 같은 색으로 칠해 한눈에 매칭되게 한다.
+    print(pal.dim("Legend  bar  ") + pal.use(BAR_USE) + pal.dim(" use  ")
+          + pal.req(BAR_REQ) + pal.dim(" req  ") + pal.lim(BAR_LIM)
+          + pal.dim(" lim   (filled = share of allocatable)"))
+    print(pal.dim("        value = usage / alloc%,   (req / lim) shown on the right"))
+    print(pal.dim("        ") + pal._w(STO_CODE, BAR_USE)
+          + pal.dim(" STO = PVC storage per namespace, relative to the largest ns"))
+    print(pal.dim("        ! = limit exceeds allocatable"))
     if not has_usage:
         print(pal.warn("Note: metrics-server not found → 'use' shown as '-'/0."))
 
@@ -504,17 +533,18 @@ def print_bars(stats: dict[str, NsStat], has_usage: bool,
 
     print("\n" + pal.head("■ By namespace"))
     name_w = max((len(ns) for ns, _ in rows), default=0)
+    max_storage = max((s.storage for _, s in rows), default=0)
     for ns, s in rows:
-        meta = f"pods {s.pods}"
-        if s.pvc_count:
-            meta += f" · pvc {s.pvc_count} ({fmt_bytes(s.storage)})"
-        print(f"  {pal.ns(ns.ljust(name_w))}   {pal.dim(meta)}")
+        print(f"  {pal.ns(ns.ljust(name_w))}   {pal.dim(f'pods {s.pods}')}")
         for ln in _bar_lines(
             (s.cpu_use, s.cpu_req, s.cpu_lim),
             (s.mem_use, s.mem_req, s.mem_lim),
             cap_cpu, cap_mem, width, indent="    ", pal=pal,
         ):
             print(ln)
+        if s.storage:
+            print(_storage_line(s.storage, s.pvc_count, max_storage,
+                                width, indent="    ", pal=pal))
 
     if not has_usage:
         print(no_metrics_hint())

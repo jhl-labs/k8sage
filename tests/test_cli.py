@@ -242,6 +242,24 @@ def test_colorize_bar_on_known_and_unknown():
     assert "\033[92m" in out
 
 
+def test_render_storage_bar():
+    assert cli.render_storage_bar(0, 100, 8) == cli.BAR_GAP * 8     # value 0
+    assert cli.render_storage_bar(50, 0, 8) == cli.BAR_GAP * 8      # total 0
+    assert cli.render_storage_bar(50, 100, 8) == cli.BAR_USE * 4 + cli.BAR_GAP * 4
+    assert cli.render_storage_bar(200, 100, 8) == cli.BAR_USE * 8   # value>total → cap
+
+
+def test_colorize_bar_storage_map():
+    bar = cli.render_storage_bar(50, 100, 4)
+    out = cli.colorize_bar(bar, cli.Palette(True), cli._STO_COLOR)
+    assert f"\033[{cli.STO_CODE}m" in out  # storage 파랑 코드
+
+
+def test_storage_line():
+    line = cli._storage_line(6 * 1024**3, 2, 6 * 1024**3, 16, "  ", cli.Palette(False))
+    assert "STO" in line and "6Gi" in line and "pvc 2" in line and "100%" in line
+
+
 def test_pct():
     assert cli._pct(0, 100) == "-"
     assert cli._pct(50, 0) == "-"
@@ -413,7 +431,7 @@ def test_print_bars_with_usage_and_pvc(capsys):
                    sort_key="cpu", pal=cli.Palette(True), width=16)
     out = capsys.readouterr().out
     assert "Whole cluster" in out and "By namespace" in out
-    assert "pvc 2" in out
+    assert "STO" in out and "pvc 2" in out   # storage 막대 라인
     assert "!" in out  # cpu_lim(8000) > cap_cpu(4000) → overcommit 표시
 
 

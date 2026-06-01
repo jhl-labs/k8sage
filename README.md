@@ -64,9 +64,11 @@ Download the file for your platform from the
 |----------|-------|
 | Linux x86_64 | `k8sage-linux-x86_64` |
 | Linux aarch64 | `k8sage-linux-aarch64` |
-| macOS (Intel) | `k8sage-macos-x86_64` |
 | macOS (Apple Silicon) | `k8sage-macos-aarch64` |
 | Windows x86_64 | `k8sage-windows-x86_64.exe` |
+
+> Intel macOS: prebuilt binaries aren't published — install via `uv` / `pipx`
+> (Option A / C) instead.
 
 ```bash
 # Linux / macOS example
@@ -141,6 +143,9 @@ CPU [████▓▓▓░░········]!  1.2 cores  38%  (   2 cores 
 - **!** — the limit exceeds cluster allocatable (overcommit)
 - The right-hand value is `usage` and its `% of allocatable`; the parentheses
   show exact `(request / limit)`.
+- A separate blue **`STO` bar** shows each namespace's PVC storage, scaled
+  relative to the largest namespace (there is no cluster-wide storage total to
+  compare against), with the absolute size and PVC count on the right.
 
 A **low usage/request ratio** means requests are over-provisioned — you're
 reserving scheduling capacity you don't actually use.
@@ -227,9 +232,11 @@ uv tool install git+https://github.com/jhl-labs/k8sage@v0.1.0
 |--------|------|
 | Linux x86_64 | `k8sage-linux-x86_64` |
 | Linux aarch64 | `k8sage-linux-aarch64` |
-| macOS (Intel) | `k8sage-macos-x86_64` |
 | macOS (애플 실리콘) | `k8sage-macos-aarch64` |
 | Windows x86_64 | `k8sage-windows-x86_64.exe` |
+
+> Intel macOS: 미리 빌드된 바이너리는 제공하지 않습니다 — `uv` / `pipx`
+> (방법 A / C)로 설치하세요.
 
 ```bash
 # Linux / macOS 예시
@@ -303,6 +310,9 @@ CPU [████▓▓▓░░········]!  1.2 cores  38%  (   2 cores 
 - **·** — 클러스터 가용량 중 미사용 여유
 - **!** — limit 이 클러스터 가용량을 초과(overcommit)
 - 오른쪽 값은 `실사용량` 과 `가용량 대비 %`, 괄호는 정확한 `(request / limit)`.
+- 별도의 파랑 **`STO` 막대**는 각 namespace 의 PVC 스토리지를 가장 큰 namespace
+  기준 상대 크기로 표시합니다(클러스터 전체 스토리지 총량 기준이 없어 상대 비교).
+  오른쪽에 절대 용량과 PVC 개수를 함께 보여줍니다.
 
 **usage/request 비율이 낮다**는 것은 request 가 과다 예약됐다는 뜻입니다 —
 실제로 쓰지 않는 스케줄링 용량을 잡아두고 있는 상태입니다.

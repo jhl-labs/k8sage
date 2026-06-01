@@ -21,6 +21,7 @@ jobs:
   binaries:
     name: binary (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30   # 느린/멈춘 러너가 릴리스를 무한정 막지 않도록
     strategy:
       fail-fast: false
       matrix:
@@ -30,9 +31,6 @@ jobs:
             ext: ""
           - os: ubuntu-24.04-arm
             target: linux-aarch64
-            ext: ""
-          - os: macos-13          # Intel
-            target: macos-x86_64
             ext: ""
           - os: macos-latest      # Apple Silicon
             target: macos-aarch64
@@ -141,11 +139,11 @@ jobs:
             |----------|-------|
             | Linux x86_64 | `k8sage-linux-x86_64` |
             | Linux aarch64 | `k8sage-linux-aarch64` |
-            | macOS Intel | `k8sage-macos-x86_64` |
             | macOS Apple Silicon | `k8sage-macos-aarch64` |
             | Windows x86_64 | `k8sage-windows-x86_64.exe` |
 
             Each binary ships with a matching `.sha256` checksum.
+            Intel macOS users: install via `uv tool install` or `pipx` instead.
 
             > Licensed under PolyForm Noncommercial 1.0.0 — free for personal /
             > research use. Commercial use requires a separate license
