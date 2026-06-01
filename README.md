@@ -15,6 +15,11 @@ Namespace 단위 CPU / 메모리 / 스토리지 사용 현황을 `kubectl` 만�
 
 </div>
 
+## Demo
+
+<img width="1435" height="1256" alt="image" src="https://github.com/user-attachments/assets/4706ef6d-04a0-43fd-8478-7f91d8b2dff6" />
+
+
 ---
 
 <a name="english"></a>
