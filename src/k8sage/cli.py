@@ -347,6 +347,34 @@ def _pct(v: int, total: int) -> str:
     return f"{p:.0f}%{'!' if p > 100 else ''}"
 
 
+def node_capacities() -> dict[str, tuple[int, int]]:
+    """노드별 allocatable (cpu_millicores, mem_bytes)."""
+    nodes = kubectl(["get", "nodes"])
+    caps: dict[str, tuple[int, int]] = {}
+    for n in nodes.get("items", []):
+        name = n.get("metadata", {}).get("name")
+        if not name:
+            continue
+        alloc = n.get("status", {}).get("allocatable", {})
+        caps[name] = (parse_cpu(alloc.get("cpu")), parse_mem(alloc.get("memory")))
+    return caps
+
+
+def node_filesystems(names: list[str]) -> dict[str, tuple[int, int]]:
+    """노드별 root filesystem 사용량/용량 (used_bytes, capacity_bytes)."""
+    out: dict[str, tuple[int, int]] = {}
+    for name in names:
+        data = kubectl_raw(f"/api/v1/nodes/{name}/proxy/stats/summary")
+        if data is None:
+            continue
+        fs = data.get("node", {}).get("fs", {})
+        used = fs.get("usedBytes")
+        cap = fs.get("capacityBytes")
+        if used is not None and cap is not None:
+            out[name] = (used, cap)
+    return out
+
+
 def cluster_capacity() -> tuple[int, int]:
     """노드 allocatable 합계 (cpu_millicores, mem_bytes)."""
     nodes = kubectl(["get", "nodes"])
@@ -430,6 +458,150 @@ def collect(namespace: str | None) -> dict[str, NsStat]:
                 stats[ns].stor_cap = cap
 
     return stats
+
+
+def collect_nodes(namespace: str | None) -> dict[str, NsStat]:
+    """노드별 Pod CPU/MEM 과 PVC requested 집계.
+
+    아직 스케줄되지 않아 spec.nodeName 이 없는 Pod 는 노드별로 귀속할 수 없어
+    제외한다. PVC 는 selected-node annotation 또는 PV nodeAffinity 로 귀속한다.
+    """
+    scope = ["-n", namespace] if namespace else ["-A"]
+    stats: dict[str, NsStat] = defaultdict(NsStat)
+    pods = kubectl(["get", "pods", *scope])
+    top = kubectl_top()
+
+    for pod in pods.get("items", []):
+        ns = pod["metadata"]["namespace"]
+        name = pod["metadata"]["name"]
+        phase = pod.get("status", {}).get("phase")
+        if phase in ("Succeeded", "Failed"):
+            continue
+        spec = pod.get("spec", {})
+        node = spec.get("nodeName")
+        if not node:
+            continue
+
+        st = stats[node]
+        st.pods += 1
+        containers = spec.get("containers", []) + spec.get("initContainers", [])
+        for c in containers:
+            res = c.get("resources", {})
+            req, lim = res.get("requests", {}), res.get("limits", {})
+            st.cpu_req += parse_cpu(req.get("cpu"))
+            st.cpu_lim += parse_cpu(lim.get("cpu"))
+            st.mem_req += parse_mem(req.get("memory"))
+            st.mem_lim += parse_mem(lim.get("memory"))
+        if top is not None and (ns, name) in top:
+            cu, mu = top[(ns, name)]
+            st.cpu_use += cu
+            st.mem_use += mu
+
+    for node, pvc_count, storage in collect_node_storage(namespace):
+        st = stats[node]
+        st.pvc_count += pvc_count
+        st.storage += storage
+
+    return stats
+
+
+def _pv_node_name(pv: dict) -> str | None:
+    affinity = pv.get("spec", {}).get("nodeAffinity", {})
+    terms = affinity.get("required", {}).get("nodeSelectorTerms", [])
+    for term in terms:
+        for expr in term.get("matchExpressions", []):
+            if expr.get("key") in ("kubernetes.io/hostname", "kubernetes.io/os.hostname"):
+                values = expr.get("values") or []
+                if values:
+                    return values[0]
+    return None
+
+
+def _pvc_node_rows(namespace: str | None) -> list[tuple[str, str, int]]:
+    """PVC 를 backing node 에 매핑한다. 반환: (namespace, node, storage_bytes)."""
+    scope = ["-n", namespace] if namespace else ["-A"]
+    pvcs = kubectl(["get", "pvc", *scope])
+
+    missing: set[str] = set()
+    rows: list[tuple[str, str, int]] = []
+    for pvc in pvcs.get("items", []):
+        ns = pvc.get("metadata", {}).get("namespace")
+        if not ns:
+            continue
+        cap = (
+            pvc.get("status", {}).get("capacity", {}).get("storage")
+            or pvc.get("spec", {}).get("resources", {}).get("requests", {}).get("storage")
+        )
+        storage = parse_mem(cap)
+        if not storage:
+            continue
+        ann = pvc.get("metadata", {}).get("annotations", {})
+        node = ann.get("volume.kubernetes.io/selected-node")
+        if node:
+            rows.append((ns, node, storage))
+            continue
+        volume_name = pvc.get("spec", {}).get("volumeName")
+        if volume_name:
+            missing.add(volume_name)
+            rows.append((ns, volume_name, storage))
+
+    pv_nodes: dict[str, str] = {}
+    if missing:
+        pvs = kubectl(["get", "pv"])
+        for pv in pvs.get("items", []):
+            name = pv.get("metadata", {}).get("name")
+            if name in missing:
+                node = _pv_node_name(pv)
+                if node:
+                    pv_nodes[name] = node
+
+    out = []
+    for ns, node_or_pv, storage in rows:
+        node = pv_nodes.get(node_or_pv, node_or_pv)
+        if node_or_pv in missing and node_or_pv not in pv_nodes:
+            continue
+        out.append((ns, node, storage))
+    return out
+
+
+def collect_node_storage(namespace: str | None) -> list[tuple[str, int, int]]:
+    """PVC 요청/프로비저닝 용량을 노드별로 집계한다.
+
+    local-path 계열 PVC 는 selected-node annotation 이 가장 직접적이다. 없으면
+    bound PV 의 nodeAffinity 를 폴백으로 본다.
+    """
+    agg: dict[str, tuple[int, int]] = {}
+    for _, node, storage in _pvc_node_rows(namespace):
+        count, total = agg.get(node, (0, 0))
+        agg[node] = (count + 1, total + storage)
+
+    return [(node, count, total) for node, (count, total) in agg.items()]
+
+
+def collect_namespace_storage_fs(
+    namespace: str | None,
+    node_fs: dict[str, tuple[int, int]],
+) -> dict[str, tuple[int, int]]:
+    """namespace PVC requested 를 backing node filesystem 용량과 매핑한다.
+
+    반환: {namespace: (node_fs_used_sum, node_fs_capacity_sum)}.
+    namespace 가 여러 노드에 PVC 를 갖고 있으면 각 노드 filesystem 은 한 번만 더한다.
+    """
+    ns_nodes: dict[str, set[str]] = defaultdict(set)
+    for ns, node, _ in _pvc_node_rows(namespace):
+        if node in node_fs:
+            ns_nodes[ns].add(node)
+
+    out: dict[str, tuple[int, int]] = {}
+    for ns, nodes in ns_nodes.items():
+        used = cap = 0
+        for node in nodes:
+            node_used, node_cap = node_fs[node]
+            used += node_used
+            cap += node_cap
+        if cap:
+            out[ns] = (used, cap)
+    return out
 
 
 # ----------------------------------------------------------------------------
@@ -619,9 +791,45 @@ def _storage_req_line(storage: int, pvc_count: int, max_storage: int,
             f"{pal.dim(f'pvc {pvc_count} · requested (no live usage)')}")
 
 
+def _node_storage_line(storage: int, pvc_count: int,
+                       fs: tuple[int, int] | None, max_storage: int,
+                       width: int, indent: str, pal: Palette) -> str:
+    """노드별 PVC requested 를 노드 파일시스템 용량 대비 표시한다."""
+    if fs:
+        fs_used, fs_cap = fs
+        bar = colorize_bar(render_storage_bar(storage, fs_cap, width),
+                           pal, _STO_COLOR)
+        pct = _pct(storage, fs_cap)
+        pct_c = pal.warn(f"{pct:>4}") if "!" in pct else pal.dim(f"{pct:>4}")
+        return (f"{indent}{pal.dim('STO')} [{bar}]  "
+                f"{pal._w(STO_CODE, f'{fmt_bytes(storage):>7}')} {pct_c}  "
+                f"{pal.dim('(')}{pal._w(STO_CODE, f'{fmt_bytes(fs_cap):>10}')}"
+                f"{pal.dim(' fs, used ')}{pal.use(fmt_bytes(fs_used))}{pal.dim(')')}  "
+                f"{pal.dim(f'pvc {pvc_count} · requested')}")
+    return _storage_req_line(storage, pvc_count, max_storage, width, indent, pal)
+
+
+def _namespace_storage_fs_line(storage: int, pvc_count: int, fs: tuple[int, int],
+                               width: int, indent: str, pal: Palette) -> str:
+    """namespace PVC requested 를 backing node filesystem 용량 대비 표시한다."""
+    fs_used, fs_cap = fs
+    bar = colorize_bar(render_storage_bar(storage, fs_cap, width), pal, _STO_COLOR)
+    pct = _pct(storage, fs_cap)
+    pct_c = pal.warn(f"{pct:>4}") if "!" in pct else pal.dim(f"{pct:>4}")
+    return (f"{indent}{pal.dim('STO')} [{bar}]  "
+            f"{pal._w(STO_CODE, f'{fmt_bytes(storage):>7}')} {pct_c}  "
+            f"{pal.dim('(')}{pal._w(STO_CODE, f'{fmt_bytes(fs_cap):>10}')}"
+            f"{pal.dim(' backing fs, used ')}{pal.use(fmt_bytes(fs_used))}"
+            f"{pal.dim(')')}  {pal.dim(f'pvc {pvc_count} · requested')}")
+
+
 def print_bars(stats: dict[str, NsStat], has_usage: bool,
                cap_cpu: int, cap_mem: int, sort_key: str, pal: Palette,
-               width: int = 32) -> None:
+               width: int = 32,
+               node_stats: dict[str, NsStat] | None = None,
+               node_caps: dict[str, tuple[int, int]] | None = None,
+               node_fs: dict[str, tuple[int, int]] | None = None,
+               ns_storage_fs: dict[str, tuple[int, int]] | None = None) -> None:
     tot = aggregate(stats)
     rows = sort_rows(stats, sort_key)
 
@@ -636,6 +844,8 @@ def print_bars(stats: dict[str, NsStat], has_usage: bool,
     print(pal.dim("        ") + pal._w(STO_CODE, BAR_USE)
           + pal.dim(" STO = PVC used / capacity (live, from kubelet); "
                     "falls back to requested size if unavailable"))
+    print(pal.dim("        requested fallback = PVC requested / backing node filesystem "
+                  "capacity when available"))
     print(pal.dim("        ! = limit exceeds allocatable"))
     if not has_usage:
         print(pal.warn("Note: live usage unavailable (Metrics API returned no "
@@ -649,9 +859,38 @@ def print_bars(stats: dict[str, NsStat], has_usage: bool,
     ):
         print(ln)
 
+    if node_stats is not None or node_caps is not None:
+        node_stats = node_stats or {}
+        node_caps = node_caps or {}
+        node_fs = node_fs or {}
+        node_names = sorted(set(node_caps) | set(node_stats))
+        if node_names:
+            print("\n" + pal.head("■ By node"))
+            name_w = max(len(name) for name in node_names)
+            max_node_storage = max((node_stats.get(n, NsStat()).storage for n in node_names),
+                                   default=0)
+            for node in node_names:
+                s = node_stats.get(node, NsStat())
+                node_cpu, node_mem = node_caps.get(node, (0, 0))
+                print(f"  {pal.ns(node.ljust(name_w))}   "
+                      f"{pal.dim(f'pods {s.pods}')}  "
+                      f"{pal.dim('alloc')} CPU {pal.use(fmt_cpu(node_cpu))}  "
+                      f"{pal.dim('MEM')} {pal.use(fmt_bytes(node_mem))}")
+                for ln in _bar_lines(
+                    (s.cpu_use, s.cpu_req, s.cpu_lim),
+                    (s.mem_use, s.mem_req, s.mem_lim),
+                    node_cpu, node_mem, width, indent="    ", pal=pal,
+                ):
+                    print(ln)
+                if s.storage:
+                    print(_node_storage_line(s.storage, s.pvc_count, node_fs.get(node),
+                                             max_node_storage, width, indent="    ",
+                                             pal=pal))
+
     print("\n" + pal.head("■ By namespace"))
     name_w = max((len(ns) for ns, _ in rows), default=0)
     max_storage = max((s.storage for _, s in rows), default=0)
+    ns_storage_fs = ns_storage_fs or {}
     for ns, s in rows:
         print(f"  {pal.ns(ns.ljust(name_w))}   {pal.dim(f'pods {s.pods}')}")
         for ln in _bar_lines(
@@ -663,6 +902,10 @@ def print_bars(stats: dict[str, NsStat], has_usage: bool,
         if s.stor_cap:
             print(_storage_usage_line(s.stor_used, s.stor_cap, s.pvc_count,
                                       width, indent="    ", pal=pal))
+        elif s.storage and ns in ns_storage_fs:
+            print(_namespace_storage_fs_line(s.storage, s.pvc_count,
+                                             ns_storage_fs[ns], width,
+                                             indent="    ", pal=pal))
         elif s.storage:
             print(_storage_req_line(s.storage, s.pvc_count, max_storage,
                                     width, indent="    ", pal=pal))
@@ -753,8 +996,15 @@ def main() -> None:
     if args.table:
         print_table(stats, has_usage, args.sort)
     else:
-        cap_cpu, cap_mem = cluster_capacity()
-        print_bars(stats, has_usage, cap_cpu, cap_mem, args.sort, pal)
+        caps = node_capacities()
+        cap_cpu = sum(cpu for cpu, _ in caps.values())
+        cap_mem = sum(mem for _, mem in caps.values())
+        nodes = collect_nodes(args.namespace)
+        fs = node_filesystems(list(caps))
+        ns_fs = collect_namespace_storage_fs(args.namespace, fs)
+        print_bars(stats, has_usage, cap_cpu, cap_mem, args.sort, pal,
+                   node_stats=nodes, node_caps=caps, node_fs=fs,
+                   ns_storage_fs=ns_fs)
 
 
 if __name__ == "__main__":

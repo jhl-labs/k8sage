@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-07
+
+### Added
+- Added a **By node** bars section below the whole-cluster bars. It shows each
+  node's CPU/MEM requests, limits, live usage, and allocatable capacity.
+- Added node-level `STO` bars for PVC requested capacity. For local-path style
+  storage, the bar is scaled against the backing node filesystem capacity.
+
+### Changed
+- PVC requested fallback bars for namespaces now use the backing node
+  filesystem capacity when PVCs can be mapped through `selected-node` or PV
+  `nodeAffinity`. This makes local-path PVC pressure visible as a real
+  filesystem share instead of a relative "largest namespace" comparison.
+
 ## [0.4.1] - 2026-06-01
 
 ### Changed
@@ -86,7 +100,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone single-file binaries for Linux, macOS (Intel & Apple Silicon),
   and Windows, published via GitHub Releases.
 
-[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/jhl-labs/k8sage/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/jhl-labs/k8sage/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/jhl-labs/k8sage/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/jhl-labs/k8sage/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/jhl-labs/k8sage/compare/v0.3.1...v0.3.2

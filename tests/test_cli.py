@@ -406,6 +406,29 @@ def test_cluster_capacity(monkeypatch):
     assert mem == 8 * 1024**3
 
 
+def test_node_capacities(monkeypatch):
+    nodes = {"items": [
+        {"metadata": {"name": "node-a"},
+         "status": {"allocatable": {"cpu": "2", "memory": "4Gi"}}},
+        {"metadata": {},
+         "status": {"allocatable": {"cpu": "1", "memory": "1Gi"}}},
+    ]}
+    monkeypatch.setattr(cli, "kubectl", lambda args: nodes)
+    assert cli.node_capacities() == {"node-a": (2000, 4 * 1024**3)}
+
+
+def test_node_filesystems(monkeypatch):
+    def fake_raw(path):
+        if "node-a" in path:
+            return {"node": {"fs": {"usedBytes": 10, "capacityBytes": 100}}}
+        if "node-b" in path:
+            return {"node": {"fs": {"usedBytes": 10}}}
+        return None
+
+    monkeypatch.setattr(cli, "kubectl_raw", fake_raw)
+    assert cli.node_filesystems(["node-a", "node-b", "node-c"]) == {"node-a": (10, 100)}
+
+
 # ---------------------------------------------------------------------------
 # collect
 # ---------------------------------------------------------------------------
@@ -489,6 +512,132 @@ def test_collect_namespace_scope_no_metrics(monkeypatch):
     assert all(s.stor_cap == 0 for s in stats.values())
 
 
+def test_collect_nodes_with_usage(monkeypatch):
+    pods = _fake_pods()
+    pods["items"][0]["spec"]["nodeName"] = "node-a"
+    pods["items"][2]["spec"]["nodeName"] = "node-b"
+    monkeypatch.setattr(cli, "kubectl", lambda args: pods)
+    monkeypatch.setattr(cli, "kubectl_top",
+                        lambda: {("app", "web"): (123, 200 * 1024**2)})
+    monkeypatch.setattr(cli, "collect_node_storage",
+                        lambda ns: [("node-a", 2, 15 * 1024**3)])
+
+    stats = cli.collect_nodes(None)
+
+    assert stats["node-a"].pods == 1
+    assert stats["node-a"].cpu_req == 300
+    assert stats["node-a"].cpu_use == 123
+    assert stats["node-a"].pvc_count == 2
+    assert stats["node-a"].storage == 15 * 1024**3
+    assert stats["node-b"].pods == 1
+    assert stats["node-b"].cpu_req == 100
+
+
+def test_collect_nodes_skips_unscheduled(monkeypatch):
+    pods = _fake_pods()
+    monkeypatch.setattr(cli, "kubectl", lambda args: pods)
+    monkeypatch.setattr(cli, "kubectl_top", lambda: None)
+    monkeypatch.setattr(cli, "collect_node_storage", lambda ns: [])
+    assert cli.collect_nodes(None) == {}
+
+
+def test_pv_node_name_none():
+    assert cli._pv_node_name({"spec": {}}) is None
+    assert cli._pv_node_name({"spec": {"nodeAffinity": {"required": {
+        "nodeSelectorTerms": [{"matchExpressions": [
+            {"key": "other", "values": ["node-a"]},
+            {"key": "kubernetes.io/hostname", "values": []},
+        ]}],
+    }}}}) is None
+
+
+def test_collect_node_storage_selected_node(monkeypatch):
+    pvcs = {"items": [
+        {"metadata": {"namespace": "app",
+                      "annotations": {"volume.kubernetes.io/selected-node": "node-a"}},
+         "status": {"capacity": {"storage": "10Gi"}}},
+        {"metadata": {"namespace": "app",
+                      "annotations": {"volume.kubernetes.io/selected-node": "node-a"}},
+         "spec": {"resources": {"requests": {"storage": "5Gi"}}}},
+    ]}
+    monkeypatch.setattr(cli, "kubectl", lambda args: pvcs)
+
+    assert cli.collect_node_storage(None) == [("node-a", 2, 15 * 1024**3)]
+
+
+def test_collect_namespace_storage_fs(monkeypatch):
+    pvcs = {"items": [
+        {"metadata": {"namespace": "app",
+                      "annotations": {"volume.kubernetes.io/selected-node": "node-a"}},
+         "status": {"capacity": {"storage": "10Gi"}}},
+        {"metadata": {"namespace": "app",
+                      "annotations": {"volume.kubernetes.io/selected-node": "node-a"}},
+         "status": {"capacity": {"storage": "5Gi"}}},
+        {"metadata": {"namespace": "infra",
+                      "annotations": {"volume.kubernetes.io/selected-node": "node-b"}},
+         "status": {"capacity": {"storage": "1Gi"}}},
+    ]}
+    node_fs = {
+        "node-a": (20 * 1024**3, 100 * 1024**3),
+        "node-b": (5 * 1024**3, 50 * 1024**3),
+    }
+    monkeypatch.setattr(cli, "kubectl", lambda args: pvcs)
+
+    assert cli.collect_namespace_storage_fs(None, node_fs) == {
+        "app": (20 * 1024**3, 100 * 1024**3),
+        "infra": (5 * 1024**3, 50 * 1024**3),
+    }
+
+
+def test_collect_node_storage_pv_node_affinity(monkeypatch):
+    pvcs = {"items": [
+        {"metadata": {"namespace": "app", "annotations": {}},
+         "spec": {"volumeName": "pv-a", "resources": {"requests": {"storage": "2Gi"}}}},
+    ]}
+    pvs = {"items": [
+        {"metadata": {"name": "pv-a"},
+         "spec": {"nodeAffinity": {"required": {"nodeSelectorTerms": [
+             {"matchExpressions": [
+                 {"key": "kubernetes.io/hostname", "values": ["node-b"]},
+             ]},
+         ]}}}},
+    ]}
+
+    def fake_kubectl(args):
+        return pvs if args[:2] == ["get", "pv"] else pvcs
+
+    monkeypatch.setattr(cli, "kubectl", fake_kubectl)
+    assert cli.collect_node_storage(None) == [("node-b", 1, 2 * 1024**3)]
+
+
+def test_pvc_node_rows_skips_unusable_pvcs(monkeypatch):
+    pvcs = {"items": [
+        {"metadata": {"annotations": {"volume.kubernetes.io/selected-node": "node-a"}},
+         "status": {"capacity": {"storage": "1Gi"}}},
+        {"metadata": {"namespace": "app", "annotations": {}},
+         "status": {"capacity": {}}},
+        {"metadata": {"namespace": "app", "annotations": {}},
+         "spec": {"volumeName": "pv-missing", "resources": {"requests": {"storage": "1Gi"}}}},
+    ]}
+    pvs = {"items": [{"metadata": {"name": "other-pv"}, "spec": {}}]}
+
+    def fake_kubectl(args):
+        return pvs if args[:2] == ["get", "pv"] else pvcs
+
+    monkeypatch.setattr(cli, "kubectl", fake_kubectl)
+    assert cli._pvc_node_rows(None) == []
+
+
+def test_collect_namespace_storage_fs_ignores_unknown_node(monkeypatch):
+    pvcs = {"items": [
+        {"metadata": {"namespace": "app",
+                      "annotations": {"volume.kubernetes.io/selected-node": "node-missing"}},
+         "status": {"capacity": {"storage": "1Gi"}}},
+    ]}
+    monkeypatch.setattr(cli, "kubectl", lambda args: pvcs)
+    assert cli.collect_namespace_storage_fs(None, {}) == {}
+
+
 # ---------------------------------------------------------------------------
 # sort_rows / aggregate
 # ---------------------------------------------------------------------------
@@ -562,6 +711,51 @@ def test_print_bars_with_usage_and_pvc(capsys):
     # stor_cap 없음 → 요청-용량 폴백 STO 라인
     assert "STO" in out and "requested (no live usage)" in out
     assert "!" in out  # cpu_lim(8000) > cap_cpu(4000) → overcommit 표시
+
+
+def test_print_bars_namespace_storage_backing_fs(capsys):
+    stats = {"app": make_stat(pods=1, cpu_req=100, pvc_count=2,
+                              storage=20 * 1024**3)}
+    cli.print_bars(stats, has_usage=True, cap_cpu=4000, cap_mem=8 * 1024**3,
+                   sort_key="cpu", pal=cli.Palette(False), width=16,
+                   ns_storage_fs={"app": (30 * 1024**3, 100 * 1024**3)})
+    out = capsys.readouterr().out
+    assert "20Gi" in out and "20%" in out and "100Gi backing fs" in out
+    assert "requested (no live usage)" not in out
+
+
+def test_print_bars_with_node_section(capsys):
+    stats = {"app": make_stat(pods=1, cpu_req=1000, cpu_use=500,
+                              mem_req=1024**3, mem_use=512 * 1024**2)}
+    nodes = {"node-a": make_stat(pods=1, cpu_req=1000, cpu_use=500,
+                                 mem_req=1024**3, mem_use=512 * 1024**2,
+                                 pvc_count=2, storage=10 * 1024**3)}
+    caps = {"node-a": (2000, 2 * 1024**3)}
+    fs = {"node-a": (25 * 1024**3, 100 * 1024**3)}
+
+    cli.print_bars(stats, has_usage=True, cap_cpu=4000, cap_mem=8 * 1024**3,
+                   sort_key="cpu", pal=cli.Palette(False), width=16,
+                   node_stats=nodes, node_caps=caps, node_fs=fs)
+    out = capsys.readouterr().out
+
+    assert out.index("Whole cluster") < out.index("By node") < out.index("By namespace")
+    assert "node-a" in out and "alloc" in out
+    assert "50%" in out  # node-a CPU request is 1000m / 2000m allocatable
+    assert "10Gi" in out and "100Gi fs" in out and "pvc 2 · requested" in out
+
+
+def test_node_storage_line_without_fs():
+    line = cli._node_storage_line(5 * 1024**3, 1, None, 10 * 1024**3, 8, "  ",
+                                  cli.Palette(False))
+    assert "requested (no live usage)" in line
+
+
+def test_print_bars_empty_node_section(capsys):
+    stats = {"app": make_stat(pods=1, cpu_req=100)}
+    cli.print_bars(stats, has_usage=True, cap_cpu=1000, cap_mem=1024**3,
+                   sort_key="cpu", pal=cli.Palette(False), width=8,
+                   node_stats={}, node_caps={})
+    assert "By node" not in capsys.readouterr().out
 
 
 def test_print_bars_storage_live_usage(capsys):
@@ -671,13 +865,17 @@ def test_main_bars(monkeypatch, capsys):
     stats = {"app": make_stat(pods=1, cpu_req=100, cpu_use=50, mem_use=10)}
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/kubectl")
     monkeypatch.setattr(cli, "collect", lambda ns: stats)
-    monkeypatch.setattr(cli, "cluster_capacity", lambda: (4000, 8 * 1024**3))
+    monkeypatch.setattr(cli, "node_capacities", lambda: {"node-a": (4000, 8 * 1024**3)})
+    monkeypatch.setattr(cli, "collect_nodes", lambda ns: {"node-a": stats["app"]})
+    monkeypatch.setattr(cli, "node_filesystems", lambda names: {})
+    monkeypatch.setattr(cli, "collect_namespace_storage_fs", lambda ns, fs: {})
     monkeypatch.setattr(cli, "get_version", lambda: "0.0.0")
     monkeypatch.setattr(cli.sys, "argv", ["k8sage", "--color", "never"])
     cli.main()
     out = capsys.readouterr().out
     assert out.startswith("k8sage 0.0.0")
     assert "Cluster allocatable" in out
+    assert "By node" in out
 
 
 def test_main_version_flag(monkeypatch, capsys):
