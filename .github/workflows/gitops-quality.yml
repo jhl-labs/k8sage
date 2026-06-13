@@ -41,6 +41,28 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Python
+        if: ${{ hashFiles('pyproject.toml', 'requirements.txt', 'requirements-dev.txt') != '' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        if: ${{ hashFiles('pyproject.toml', 'requirements.txt', 'requirements-dev.txt') != '' }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f pyproject.toml ]; then
+            python -m pip install -e '.[dev]' || python -m pip install -e .
+          fi
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          fi
+          if [ -f requirements-dev.txt ]; then
+            python -m pip install -r requirements-dev.txt
+          fi
+          python -m pip install pytest pytest-cov
+
       - name: Install project dependencies
         if: ${{ hashFiles('package.json') != '' }}
         run: |
